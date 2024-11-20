@@ -5,7 +5,7 @@ clc;
 %------------SETTINGS-------------
 
 dAlpha = 1/2; %alpha/2 spacing is dAlpha*TR
-w = [402.49 596.92]; %kHz, fat water
+w = [402.49 596.92]/1000; %kHz, fat water
 
 nIt = 10^9;
 
@@ -22,7 +22,7 @@ omegaBInitial = 0;
 
 %Measured signal
 load(path+"\data.mat");
-S = squeeze(Data); %NS x NL x NE
+S_ = permute(squeeze(Data),[3 1 2]); %NE x NS x NL
 clear Data;
 
 load(path+"\par.mat");
@@ -32,68 +32,91 @@ TE = par.inf.te_time; %ms
 
 NE = length(TE); %number of echoes
 M = length(w); %number of metabolites
-NS = length(S(:,1,1)); %number of samples per line in k-space
-NL = length(S(1,:,1)); %number of lines in k-space
-
-%Known chemical shifts
-TEw = reshape(kron(w, TE), [NE M]);
-C = exp(1i*TEw); %NE x M
+NS = length(S_(1,:,1)); %number of samples per line in k-space
+NL = length(S_(1,1,:)); %number of lines in k-space
 
 %Write raw images at different echo times
-SF = fftshift(fft2(S),1);
 for k = 1:NE
-    imwrite(rescale(abs(SF(:,:,k))),"TE_"+strrep(num2str(TE(k)),".","_")+"_ms.png");
+    %imwrite(permute(rescale(abs(fftshift(fft2(S_(k,:,:))))),[3 2 1]),"Imag_TE_"+strrep(num2str(TE(k)),".","_")+"_ms.png");
+    imwrite(permute(rescale(abs(S_(k,:,:))),[3 2 1]),"kSpace_TE_"+strrep(num2str(TE(k)),".","_")+"_ms.png");
+    SF = permute(fftshift(fft2(S_(k,:,:))),[3 2 1]);
+    imwrite(rescale(abs(SF)),"Imag_TE_"+strrep(num2str(TE(k)),".","_")+"_ms.png");
 end
 
-%This layout of S is better suited for the algorithm
-S = permute(S, [3 1 2]); %NE x NS x NL
+T2sMap = zeros(NS, NL);
+PhiMap = zeros(NS, NL);
+OmegaBMap = zeros(NS, NL);
+rhoSeparated = zeros(M, NS, NL);
 
-%IDEAL loop
-for it = 1:nIt+1
+for pixX = 1:NS
 
-    R = diag(exp(-abs(TE-dAlpha*TR)/T2sInitial)); 
-    K = linspace(1,NE,NE);
-    G = diag(exp(1i*(-1).^K*phiInitial));
-    Q = diag(exp(1i*omegaBInitial*TE));
+    for pixY = 1:NL
+        
+        %For every voxel
 
-    %Encoding matrix
-    E = R*G*Q*C; %NE x M
-    
-    %Estimate for metabolite signals
-    rho = zeros(M,NS,NL);
-    for k = 1:NL
-        rho(:,:,k) = E\S(:,:,k); %A*x=B solved by A\B; dim of rho: M x NS x NL
+        S = S_(:,pixX,pixY); %NE
+
+        %Known chemical shifts
+        TEw = reshape(kron(w, TE), [NE M]);
+        C = exp(1i*TEw); %NE x M
+        
+        %IDEAL loop
+        for it = 1:nIt+1
+        
+            R = diag(exp(-abs(TE-dAlpha*TR)/T2sInitial)); %NE x NE
+            K = linspace(1,NE,NE); %NE
+            G = diag(exp(1i*(-1).^K*phiInitial)); %NE x NE
+            Q = diag(exp(1i*omegaBInitial*TE)); %NE x NE
+        
+            %Encoding matrix
+            E = R*G*Q*C; %NE x M
+            
+            %Estimate for metabolite signals
+            %A*x=B solved by A\B or pagemldivide(A,B) for 3 D matrices
+            rho = E\S; %M
+            
+            %Signal that would have been measured with estimated parameters
+            Se = E*rho; %NE
+            
+            %Difference between measured signal and signal that would have been
+            %measured with estimated parameters
+            Sdiff = S-Se; %NE
+            
+            %1st order Taylor expansion matrix of the signal equation
+            B1 = (1/T2sInitial^2)*abs(TE'-dAlpha*TR).*Se; %NE
+            B2 = 1i*((-1).^linspace(1,NE,NE)').*Se; %NE
+            B3 = 1i*TE'.*Se; %NE
+            B4 = E; %NE x M
+        
+            B=[B1 B2 B3 B4]; %NE x (M + 3)
+
+            dT = B\Sdiff; %M+3
+
+            dT2s = dT(1); 
+            dPhi = dT(2);
+            dOmegaB = dT(3);
+            dRho = dT(4:end);
+            
+            T2sInitial = T2sInitial+dT2s; %scalar
+            phiInitial = phiInitial+dPhi; %scalar
+            omegaBInitial = omegaBInitial+dOmegaB; %scalar
+            rho = rho+dRho; %M
+        
+        end
+
+        T2sMap(pixX, pixY) = T2sInitial;
+        PhiMap(pixX, pixY) = phiInitial;
+        OmegaBMap(pixX, pixY) = omegaBInitial;
+
+        for met = 1:M
+            rhoSeparated(met, pixX, pixY) = rho(met);
+        end
+
     end
-    
-    %Signal that would have been measured with estimated parameters
-    Se = permute(pagemtimes(repmat(E, [1 1 NL]),rho),[1 3 2]); %NE x NS x NL %TODO: Insert into algorithm in MA_TEX
-    
-    %Difference between measured signal and signal that would have been
-    %measured with estimated parameters
-    Sdiff = permute(S,[1 3 2])-Se; %NE x NS x NL
-    
-    %1st order Taylor expansion matrix of the signal equation
-    %B = zeros(4,NE);
-    %X = repmat(abs(TE-dAlpha*TR))
-    %for k = 1:NL
-    %B(1,:) = (1/T2sInitial^2)*X.*Se;
-    B1 = permute((1/T2sInitial^2)*abs(permute(repmat(TE,[NL 1 NS]),[2 1 3])-dAlpha*TR).*Se,[1 3 2]);
-    B2 = permute(permute(repmat(1i*((-1).^linspace(1,NE,NE)),[NL 1 NS]),[2 1 3]).*Se,[1 3 2]);
-    B3 = permute(1i*permute(repmat(TE,[NL 1 NS]),[2 1 3]).*Se,[1 3 2]);
-    B4 = permute(repmat(E,[1 1 NS NL]),[2 1 3 4]);
-    %end
-    %TODO: continue, not bad dimensions, estimates T2* MAP for all pixels,
-    %not T* scalar
-    dTaylor = B\Sdiff;
-    
-    T2sInitial = T2sInitial+dTaylor(1);
-    phiInitial = phiInitial+dTaylor(2);
-    omegaBInitial = omegaBInitial+dTaylor(3);
-    rho = rho+dTaylor(4);
 
 end
 
-SFFT = fftshift(fft2(S),1);
-rhoFFT = fftshift(fft2(rho),1);
-
-%imshow(abs(SF(:,:,1,1,1,1,1)),[]);
+imwrite(rescale(abs(T2sMap)),"T2sMap.png");
+imwrite(rescale(abs(PhiMap)),"PhiMap.png");
+imwrite(rescale(abs(OmegaBMap)),"OmegaBMap.png");
+imwrite(rescale(abs(OmegaBMap)),"OmegaBMap.png");
