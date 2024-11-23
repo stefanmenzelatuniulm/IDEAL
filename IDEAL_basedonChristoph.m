@@ -16,7 +16,9 @@ close all;
 clear all;
 clc;
 
-it_max = 10^9;
+path = "C:\Users\menze\Desktop\Matlab\IDEAL\ME bssfp data\2024_11_11\Reconstructed\32";
+
+it_max = 10;
 
 maxFmap = inf;
 maxR2s = inf;
@@ -24,11 +26,20 @@ minR2s = -inf;
 maxTheta = inf;
 minT2s = -inf;
 
+delta_f = [402.49 596.92]/1000; %kHz, fat water
+
+load(path+"\par.mat");
+
+TR = par.inf.rep_time; %ms 
+echo_times = par.inf.te_time; %ms
+
 %-------------END OF SETTINGS-------------
 
 % swap echoes and repetitions
-S = permute(S,[1 2 3 5 4]);
-[Nx,Ny,Nz,Nr,Ne] = size(S);
+S=load(path+"\data.mat");
+S=S.Data;
+S = permute(S,[1 2 3 4 5 7 6]);
+[Nx,Ny,Nz,Nr,N,Ne] = size(S);
 
 % place echoes in 1st dimension
 S = permute(reshape(S,[Nx*Ny*Nz*Nr Ne]), [2 1]);
@@ -95,7 +106,6 @@ for iter = 1:it_max
 
     % print current values
     fprintf('%4d%11.4f%11.4f%15.4f%15.4f%11.4f%11.4f\n', iter, mean(dFe), mean(ddFe), mean(dR2e), mean(ddR2e), mean(abs(dtheta)), mean(abs(ddtheta)));
-
 end 
 
 F_map = reshape(dFe, [Nx, Ny, Nz, Nr]);
